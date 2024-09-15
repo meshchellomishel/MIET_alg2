@@ -176,6 +176,77 @@ enum process_states {
 #define ENOLEFTBRACK -1
 #define ENORIGHTBRACK -2
 
+static int scan_digit(struct ctx *ctx, int stack_start,
+		      struct element *el)
+{
+	int stack_end = stack_start;
+
+	for (int i = stack_start; i < ctx->size; i++) {
+		char sym = ctx->input[i];
+
+		if ((isdigit(sym) ||
+		     sym == '.'))  {
+			continue;
+		}
+
+		stack_end = i - 1;
+		el->type = ELEMENT_DIGIT;
+		el->value = double_validate(ctx->input,
+					    stack_start,
+					    stack_end);
+		printf("Parsed double: %f [%d, %d]\n",
+		       el->value, stack_start,
+		       stack_end);
+		return stack_end;
+	}
+	stack_end = ctx->size - 1;
+	el->type = ELEMENT_DIGIT;
+	el->value = double_validate(ctx->input,
+				    stack_start,
+				    stack_end);
+	printf("Parsed double: %f [%d, %d]\n",
+	       el->value, stack_start, stack_end);
+
+	return ctx->size - 1;
+}
+
+static int scan_func(struct ctx *ctx, int stack_start,
+		     struct element *el)
+{
+	int ret;
+	int stack_end = stack_start;
+	enum process_states stack_state = STACK_FUNC;
+
+	for (int i = stack_start; i < ctx->size; i++) {
+		char sym = ctx->input[i];
+
+		if (isalpha(sym) || isdigit(sym))
+			continue;
+
+		if (sym == OP_L_BR &&
+		    stack_state == STACK_FUNC) {
+			stack_end = i - 1;
+
+			stack_state = STACK_FUNC_ARGS;
+			el->type = ELEMENT_FUNCTION;
+			ret = func_validate(ctx->input, stack_start,
+					    stack_end, el->func);
+			if (ret < 0)
+				return ret;
+
+			printf("Parsed function: %s [%d, %d]\n",
+			       el->func->name, stack_start,
+			       stack_end);
+		} else if (sym == OP_R_BR &&
+			   stack_state == STACK_FUNC_ARGS) {
+			stack_state = STACK_UNSPEC;
+			return i;
+		}
+	}
+
+	return ctx->size - 1;
+}
+
 static int ctx_process(struct ctx *ctx)
 {
 	int ret, buf;
@@ -188,57 +259,19 @@ static int ctx_process(struct ctx *ctx)
 	for (int i = 0; i < ctx->size; i++) {
 		char sym = ctx->input[i];
 
-		if ((isdigit(sym) ||
-		     sym == '.') &&
-		    (stack_state == STACK_UNSPEC ||
-		     stack_state == STACK_DIGIT))  {
-			if (stack_state != STACK_DIGIT)
-				d_stack_start = i;
-			stack_state = STACK_DIGIT;
+		printf("index: %d/%d\n", i, ctx->size);
+		if (isdigit(sym) || sym == '.') {
+			printf("[INFO]: Scanning digit...\n");
+			i = scan_digit(ctx, i, &current_el);
+			printf("jump to %d\n", i);
 			continue;
-		} else if (stack_state == STACK_DIGIT) {
-			d_stack_end = i - 1;
-
-			stack_state = STACK_UNSPEC;
-			current_el.type = ELEMENT_DIGIT;
-			current_el.value = double_validate(ctx->input,
-							   d_stack_start,
-							   d_stack_end);
-			printf("Parsed double: %f [%d, %d]\n",
-			       current_el.value, d_stack_start,
-			       d_stack_end);
-
-			d_stack_start = -1;
-			d_stack_end = -1;
 		}
 
-		if ((isalpha(sym) && stack_state == STACK_UNSPEC) ||
-		    (isdigit(sym) && stack_state == STACK_FUNC)) {
-			if (stack_state == STACK_UNSPEC)
-				d_stack_start = i;
-			stack_state = STACK_FUNC;
-			continue;
-		} else if (sym == OP_L_BR &&
-			   stack_state == STACK_FUNC) {
-			d_stack_end = i - 1;
-
-			stack_state = STACK_FUNC_ARGS;
-			current_el.type = ELEMENT_FUNCTION;
-			ret = func_validate(ctx->input, d_stack_start,
-					    d_stack_end, current_el.func);
-			if (ret < 0)
-				return ret;
-
-			printf("Parsed function: %s [%d, %d]\n",
-			       current_el.func->name, d_stack_start,
-			       d_stack_end);
-
-			d_stack_start = -1;
-			d_stack_end = -1;
-		} else if (sym == OP_R_BR &&
-			   stack_state == STACK_FUNC_ARGS) {
-			stack_state = STACK_UNSPEC;
-		}
+		// if (isalpha(sym)) {
+		// 	printf("[INFO]: Scanning func...\n");
+		// 	i = scan_digit(ctx, i, &current_el);
+		// 	continue;
+		// }
 
 		buf = op_validate(sym);
 		if (buf) {
@@ -295,8 +328,9 @@ static int start(const char *msg)
 	struct ctx *ctx = &_ctx;
 	int msg_size = strlen(msg);
 
+	memset(ctx->input, 0, ARRAY_SIZE(ctx->input));
 	memcpy(ctx->input, msg, MIN(msg_size, ARRAY_SIZE(ctx->input)));
-	ctx->size = strlen(ctx->input) - 1;
+	ctx->size = strlen(ctx->input);
 	ret = ctx_process(ctx);
 	if (ret > 0) {
 		printf("[ERROR]: Failed to process on '%d'\n",
@@ -341,7 +375,7 @@ int main(void)
 	int test_failed = 0;
 
 	printf("\n[TEST1]: .2 + (2.2 + (2. * .1))\n\n");
-	ret = start(".2 + 2.2 + 2.");
+	ret = start(".2 + (2.2 + (2. * .1))");
 	if (ret) {
 		printf("TEST1 Failed: err = %d\n", ret);
 		test_failed++;
