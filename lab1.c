@@ -1,4 +1,5 @@
 #include "linux/kernel.h"
+#include <assert.h>
 #include <linux/list.h>
 #include <stdlib.h>
 #include <math.h>
@@ -178,8 +179,7 @@ static char *slice(const char *arr,
 		exit(1);
 	}
 
-	memcpy(buf, (char *)(arr + start), size);
-	printf("array size: %d, %ld, %s\n", size, strlen(buf), buf);
+	memcpy(buf, (char *)(arr + start), size - 1);
 	return buf;
 }
 
@@ -235,17 +235,14 @@ static int cmp_op(enum op_type op1, enum op_type op2)
 	if (op1 == OP_L_BR)
 		return 1;
 
-	printf("op1: %d, op2: %d, res: %d\n",
-	       op1, op2, abs((int)(op1 - op2)) / 2);
-
-	return abs((int)(op1 - op2)) / 2;
+	return (op1 - op2) / 2;
 }
 
 static void stack_print(struct ctx *ctx)
 {
 	struct _stack *buf;
 
-	printf("\n[STACK]\n\n");
+	printf("\n[STACK]\n");
 	printf("Output: ");
 	list_for_each_entry_reverse(buf, &ctx->stack.output_start, el) {
 		switch (buf->value->type) {
@@ -256,6 +253,7 @@ static void stack_print(struct ctx *ctx)
 			printf("%c ", op_type2char(buf->value->op));
 			break;
 		default:
+			printf("'%d' ", buf->value->type);
 			break;
 		}
 	}
@@ -322,7 +320,7 @@ static int stack_insert(struct ctx *ctx, struct element *el)
 
 		list_for_each_entry_safe(buf, buf_next,
 					 &ctx->stack.ops_start, el) {
-			if (buf->value->op == OP_L_BR) {
+			if (buf->value->type == ELEMENT_L_BRACK) {
 				list_del(&buf->el);
 				break;
 			}
@@ -337,6 +335,55 @@ static int stack_insert(struct ctx *ctx, struct element *el)
 	}
 	stack_print(ctx);
 	return ret;
+}
+
+static double stack_calc(struct ctx *ctx)
+{
+	struct _stack *buf, *buf_next;
+	struct _stack *buf_d1, *buf_d2;
+	double res = 0;
+
+	list_for_each_entry_safe_reverse(buf, buf_next,
+				 &ctx->stack.output_start, el) {
+		if (buf->value->type != ELEMENT_OPERATOR)
+			continue;
+
+		buf_d1 = list_next_entry(buf, el);
+		buf_d2 = list_next_entry(buf_d1, el);
+		assert(buf_d1->value);
+		assert(buf_d2->value);
+
+		list_del(&buf_d2->el);
+		list_del(&buf->el);
+
+		switch (buf->value->op) {
+		case OP_ADD:
+			res = buf_d2->value->value + buf_d1->value->value;
+			break;
+		case OP_MINUS:
+			res = buf_d2->value->value - buf_d1->value->value;
+			break;
+		case OP_DOT:
+			res = buf_d2->value->value * buf_d1->value->value;
+			break;
+		case OP_FRAC:
+			res = (double)
+				buf_d2->value->value / buf_d1->value->value;
+			break;
+		default:
+			assert(0);
+			break;
+		}
+
+		printf("OP: %f %c %f = %f\n", buf_d1->value->value,
+		       op_type2char(buf->value->op),
+		       buf_d2->value->value, res);
+		buf_d1->value->value = res;
+
+		stack_print(ctx);
+	}
+
+	return res;
 }
 
 static void stack_collect(struct ctx *ctx)
@@ -482,7 +529,6 @@ static int ctx_process(struct ctx *ctx)
 		stack_state = get_sym_type(sym);
 		switch (stack_state) {
 		case STACK_DIGIT:
-			printf("[INFO]: Scanning digit...\n");
 			i = scan_digit(ctx, i, el, &ret);
 			if (ret < 0) {
 				printf("[ERROR]: Failed to parse function\n");
@@ -494,7 +540,6 @@ static int ctx_process(struct ctx *ctx)
 				free(el);
 			break;
 		case STACK_FUNC:
-			printf("[INFO]: Scanning func...\n");
 			ret = scan_func(ctx, i, el);
 			if (ret < 0) {
 				printf("[ERROR]: Failed to parse function\n");
@@ -638,6 +683,7 @@ static int start(const char *msg)
 
 	stack_collect(ctx);
 	stack_print(ctx);
+	printf("\nResult: %f\n", stack_calc(ctx));
 
 on_exit:
 	stack_free(ctx);
@@ -650,13 +696,13 @@ int main(void)
 	char *buf;
 	int test_failed = 0;
 
-	// buf = "(2 + 2) * 3 : 2";
-	// printf("\n[TEST1]: %s\n\n", buf);
-	// ret = start(buf);
-	// if (ret) {
-	// 	printf("TEST1 Failed: err = %d\n", ret);
-	// 	test_failed++;
-	// }
+	buf = "(2 + 2) * 3 : 2";
+	printf("\n[TEST1]: %s\n\n", buf);
+	ret = start(buf);
+	if (ret) {
+		printf("TEST1 Failed: err = %d\n", ret);
+		test_failed++;
+	}
 
 	buf = "(.2 + 2.2) * (1 - 2) : (2. * .1)";
 	printf("\n[TEST1]: %s\n\n", buf);
