@@ -23,6 +23,12 @@
 #define OP_R_BR ')'
 #define OP_FN_LOG "log"
 
+#define EUNKNOWN	1
+#define EFUNCNOFOUND	2
+#define ENOLEFTBRACK	3
+#define ENORIGHTBRACK	4
+#define EDOUBLE		5
+
 
 static const char ops[] = {
 	OP_EQ, OP_AD, OP_MN,
@@ -40,12 +46,12 @@ struct func {
 
 	double (*func)(double *args, unsigned int args_len);
 
-	double *args;
 	unsigned int args_len;
+	double *args;
 };
 
 static const struct func allowed_functions[] = {
-	{ "log", _log },
+	{ "log", _log, 2 },
 };
 
 enum element_type {
@@ -80,6 +86,8 @@ struct ctx {
 	unsigned int size;
 
 	struct element *stack;
+
+	unsigned int index_err;
 };
 
 static bool str_equal(const char *s1, const char *s2)
@@ -138,7 +146,7 @@ static int func_validate(const char *stack,
 			 int start, int end,
 			 struct func *func)
 {
-	int ret = -1;
+	int ret = -EFUNCNOFOUND;
 	char *buf = slice(stack, start, end);
 
 	for (int i = 0; i < 0; i++) {
@@ -149,6 +157,9 @@ static int func_validate(const char *stack,
 			break;
 		}
 	}
+
+	if (ret)
+		printf("[ERROR]: Unexpected function '%s'\n", buf);
 
 	free(buf);
 	return ret;
@@ -171,14 +182,17 @@ enum process_states {
 	STACK_DIGIT,
 	STACK_FUNC,
 	STACK_FUNC_ARGS,
+
+	STACK_L_BR,
+	STACK_R_BR,
+	STACK_OP,
+	STACK_SKIP,
 };
 
-#define ENOLEFTBRACK -1
-#define ENORIGHTBRACK -2
-
 static int scan_digit(struct ctx *ctx, int stack_start,
-		      struct element *el)
+		      struct element *el, int *error)
 {
+	bool delim_met = false;
 	int stack_end = stack_start;
 
 	for (int i = stack_start; i < ctx->size; i++) {
@@ -186,6 +200,12 @@ static int scan_digit(struct ctx *ctx, int stack_start,
 
 		if ((isdigit(sym) ||
 		     sym == '.'))  {
+			if (sym == '.' && !delim_met) {
+				delim_met = true;
+			} else if (sym == '.' && delim_met) {
+				*error = i;
+				return -EUNKNOWN;
+			}
 			continue;
 		}
 
@@ -237,14 +257,38 @@ static int scan_func(struct ctx *ctx, int stack_start,
 			printf("Parsed function: %s [%d, %d]\n",
 			       el->func->name, stack_start,
 			       stack_end);
+			continue;
 		} else if (sym == OP_R_BR &&
 			   stack_state == STACK_FUNC_ARGS) {
 			stack_state = STACK_UNSPEC;
 			return i;
+		} else if (sym != ',' && sym != '.' && !isdigit(sym)) {
+			printf("[ERROR]: Unexpected symbol '%c'\n", sym);
+			return -EFUNCNOFOUND;
 		}
+
+		return func_validate(ctx->input, stack_start,
+					    stack_end, el->func);
 	}
 
 	return ctx->size - 1;
+}
+
+static enum process_states get_sym_type(char sym)
+{
+	if (isdigit(sym) || sym == '.')
+		return STACK_DIGIT;
+	if (isalpha(sym))
+		return STACK_FUNC;
+	if (op_validate(sym))
+		return STACK_OP;
+	if (sym == OP_L_BR)
+		return STACK_L_BR;
+	if (sym == OP_R_BR)
+		return STACK_R_BR;
+	if (other_validate(sym))
+		return STACK_SKIP;
+	return STACK_UNSPEC;
 }
 
 static int ctx_process(struct ctx *ctx)
@@ -255,75 +299,112 @@ static int ctx_process(struct ctx *ctx)
 	int l_br_count = 0, r_br_count = 0;
 	int d_stack_start = -1, d_stack_end = -1;
 	enum process_states stack_state = STACK_UNSPEC;
+	enum process_states last_stack_state = stack_state;
 
 	for (int i = 0; i < ctx->size; i++) {
 		char sym = ctx->input[i];
 
-		printf("index: %d/%d\n", i, ctx->size);
-		if (isdigit(sym) || sym == '.') {
+		stack_state = get_sym_type(sym);
+		switch (stack_state) {
+		case STACK_DIGIT:
 			printf("[INFO]: Scanning digit...\n");
-			i = scan_digit(ctx, i, &current_el);
-			printf("jump to %d\n", i);
-			continue;
-		}
-
-		// if (isalpha(sym)) {
-		// 	printf("[INFO]: Scanning func...\n");
-		// 	i = scan_digit(ctx, i, &current_el);
-		// 	continue;
-		// }
-
-		buf = op_validate(sym);
-		if (buf) {
+			i = scan_digit(ctx, i, &current_el, &ret);
+			if (ret < 0) {
+				printf("[ERROR]: Failed to parse function\n");
+				ctx->index_err = ret;
+				return ret;
+			}
+			break;
+		case STACK_FUNC:
+			printf("[INFO]: Scanning func...\n");
+			ret = scan_func(ctx, i, &current_el);
+			if (ret < 0) {
+				printf("[ERROR]: Failed to parse function\n");
+				ctx->index_err = i;
+				return ret;
+			}
+			break;
+		case STACK_OP:
+			buf = op_validate(sym);
 			current_el.type = ELEMENT_OPERATOR;
 			current_el.op = buf;
 
 			printf("Parsed op: %d\n", current_el.op);
-			continue;
-		}
-
-		if (sym == OP_L_BR) {
+			break;
+		case STACK_L_BR:
 			l_br_count++;
-			continue;
-		}
-
-		if (sym == OP_R_BR) {
+			break;
+		case STACK_R_BR:
 			r_br_count++;
+			if (r_br_count > l_br_count) {
+				ctx->index_err = i;
+				return -ENOLEFTBRACK;
+			}
+			break;
+		case STACK_SKIP:
 			continue;
+		default:
+			ctx->index_err = i;
+			return -EUNKNOWN;
 		}
 
-		if (other_validate(sym))
-			continue;
-
-		return i + 1;
-	}
-
-	if (stack_state != STACK_UNSPEC) {
-		if (stack_state == STACK_DIGIT) {
-			d_stack_end = ctx->size - 1;
-
-			stack_state = STACK_UNSPEC;
-			current_el.type = ELEMENT_DIGIT;
-			current_el.value = double_validate(ctx->input,
-							   d_stack_start,
-							   d_stack_end);
-			printf("Parsed double: %f [%d, %d]\n",
-			       current_el.value, d_stack_start,
-			       d_stack_end);
+		if (stack_state == last_stack_state) {
+			switch (stack_state) {
+			case STACK_OP:
+				if (sym == '-')
+					break;
+				ctx->index_err = i;
+				return -EDOUBLE;
+			case STACK_SKIP:
+				break;
+			case STACK_L_BR:
+				break;
+			case STACK_R_BR:
+				break;
+			default:
+				ctx->index_err = i;
+				return -EDOUBLE;
+			}
+		} else if (stack_state == STACK_R_BR &&
+			   last_stack_state == STACK_L_BR) {
+			ctx->index_err = i;
+			return -EUNKNOWN;
 		}
+		last_stack_state = stack_state;
 	}
 
-	if (l_br_count != r_br_count)
-		return (r_br_count > l_br_count ?
-				ENOLEFTBRACK : ENORIGHTBRACK);
+	if (l_br_count > r_br_count) {
+		ctx->index_err = ctx->size - 1;
+		return -ENORIGHTBRACK;
+	}
 
 	return 0;
+}
+
+static void print_err(struct ctx *ctx)
+{
+	char *error_msg;
+
+	error_msg = calloc(ctx->size, sizeof(char));
+	if (!error_msg) {
+		printf("[CRIT]: Failed to allocate error msg\n");
+		exit(1);
+	}
+
+	for (int i = 0; i < ctx->size - 1; i++)
+		error_msg[i] = '_';
+	error_msg[ctx->index_err] = '^';
+
+	printf("Error was occured here:\n");
+	printf("%s\n", ctx->input);
+	printf("%s\n", error_msg);
+
+	free(error_msg);
 }
 
 static int start(const char *msg)
 {
 	int ret;
-	char *error_msg;
 	struct ctx _ctx;
 	struct ctx *ctx = &_ctx;
 	int msg_size = strlen(msg);
@@ -332,27 +413,12 @@ static int start(const char *msg)
 	memcpy(ctx->input, msg, MIN(msg_size, ARRAY_SIZE(ctx->input)));
 	ctx->size = strlen(ctx->input);
 	ret = ctx_process(ctx);
-	if (ret > 0) {
-		printf("[ERROR]: Failed to process on '%d'\n",
-		       ret - 1);
-
-		error_msg = calloc(1, ret);
-		if (!error_msg) {
-			printf("[CRIT]: Failed to allocate error msg\n");
-			exit(1);
-		}
-
-		for (int i = 0; i < ctx->size - 1; i++)
-			error_msg[i] = '_';
-		error_msg[ret - 1] = '^';
-
-		printf("Error was occured here:\n");
-		printf("%s\n", ctx->input);
-		printf("%s\n", error_msg);
-
-		free(error_msg);
-	} else if (ret < 0) {
-		switch (ret) {
+	if (ret < 0) {
+		switch (-ret) {
+		case EFUNCNOFOUND:
+			printf("[ERROR]: Failed to parse, "
+			       "no such function found\n");
+			break;
 		case ENOLEFTBRACK:
 			printf("[ERROR]: Failed to parse, "
 			       "not enouph open bracket\n");
@@ -361,9 +427,14 @@ static int start(const char *msg)
 			printf("[ERROR]: Failed to parse, "
 			       "not enouph close bracket\n");
 			break;
+		case EDOUBLE:
+			printf("[ERROR]: Failed to parse, "
+			       "double elements found\n");
+			break;
 		default:
 			break;
 		}
+		print_err(ctx);
 	}
 
 	return ret;
@@ -372,33 +443,62 @@ static int start(const char *msg)
 int main(void)
 {
 	int ret;
+	char *buf;
 	int test_failed = 0;
 
-	printf("\n[TEST1]: .2 + (2.2 + (2. * .1))\n\n");
-	ret = start(".2 + (2.2 + (2. * .1))");
+	buf = ".2 + (2.2 +- (2. * .1))";
+	printf("\n[TEST1]: %s\n\n", buf);
+	ret = start(buf);
 	if (ret) {
 		printf("TEST1 Failed: err = %d\n", ret);
 		test_failed++;
 	}
 
-	printf("\n[TEST2]: .2 + 2.2 + (2.\n\n");
-	ret = start(".2 + 2.2 + (2.");
-	if (ret != ENORIGHTBRACK) {
+	buf = ".2 + (2.2 +* (2. * .1))";
+	printf("\n[TEST1_1]: %s\n\n", buf);
+	ret = start(buf);
+	if (ret != -EDOUBLE) {
+		printf("TEST1_1 Failed: err = %d\n", ret);
+		test_failed++;
+	}
+
+	buf = ".2 + (2.2 + (2. 2. * .1))";
+	printf("\n[TEST1_2]: %s\n\n", buf);
+	ret = start(buf);
+	if (ret != -EDOUBLE) {
+		printf("TEST1_2 Failed: err = %d\n", ret);
+		test_failed++;
+	}
+
+	buf = ".2 + 2.2 + (2.";
+	printf("\n[TEST2]: %s\n\n", buf);
+	ret = start(buf);
+	if (ret != -ENORIGHTBRACK) {
 		printf("TEST2 Failed: err = %d\n", ret);
 		test_failed++;
 	}
 
-	printf("\n[TEST3]: .2 + 2.2 + )2.\n\n");
-	ret = start(".2 + 2.2 + )2.");
-	if (ret != ENOLEFTBRACK) {
+	buf = ".2 + 2.2 + )2.";
+	printf("\n[TEST3]: %s\n\n", buf);
+	ret = start(buf);
+	if (ret != -ENOLEFTBRACK) {
 		printf("TEST3 Failed: err = %d\n", ret);
 		test_failed++;
 	}
 
-	printf("\n[TEST4]: .2 + 2.2 + log2.\n\n");
-	ret = start(".2 + 2.2 + log2.");
+	buf = ".2 + 2.2 + log2.";
+	printf("\n[TEST4]: %s\n\n", buf);
+	ret = start(buf);
 	if (ret == 0) {
 		printf("TEST4 Failed: err = %d\n", ret);
+		test_failed++;
+	}
+
+	buf = ".2 + 2.2 + log(2.)";
+	printf("\n[TEST5]: %s\n\n", buf);
+	ret = start(buf);
+	if (ret) {
+		printf("TEST5 Failed: err = %d\n", ret);
 		test_failed++;
 	}
 
