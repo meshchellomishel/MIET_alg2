@@ -38,15 +38,16 @@ static const char ops[] = {
 	L_BR, R_BR
 };
 
-static double _log(double *args, unsigned int args_len)
+static double _log(double *args)
 {
-	return 0;
+	printf("log(%f, %f) = %f\n", args[1], args[0], (double)log(args[1]) / log(args[0]));
+	return (double)log(args[0]) / log(args[1]);
 }
 
 struct func {
 	char *name;
 
-	double (*func)(double *args, unsigned int args_len);
+	double (*func)(double *args);
 
 	unsigned int args_len;
 	double *args;
@@ -64,21 +65,37 @@ enum element_type {
 
 	ELEMENT_L_BRACK,
 	ELEMENT_R_BRACK,
+	ELEMENT_COMMA,
 };
 
 enum op_type {
 	OP_UNSPEC = 0,
 
-	OP_ADD = 2,
-	OP_MINUS = 3,
+	OP_ADD,
+	OP_MINUS,
 
-	OP_DOT = 5,
-	OP_FRAC = 6,
+	OP_DOT,
+	OP_FRAC,
 
-	OP_FUNC = 8,
+	OP_FUNC,
 
-	OP_L_BR = 10,
-	OP_R_BR = 11,
+	OP_L_BR,
+	OP_R_BR,
+};
+
+static const int op_prio[] = {
+	[OP_UNSPEC] = 0,
+
+	[OP_ADD] = 1,
+	[OP_MINUS] = 1,
+
+	[OP_DOT] = 2,
+	[OP_FRAC] = 2,
+
+	[OP_FUNC] = 3,
+
+	[OP_L_BR] = 4,
+	[OP_R_BR] = 4,
 };
 
 struct element {
@@ -87,7 +104,7 @@ struct element {
 	double value;
 	enum op_type op;
 
-	struct func *func;
+	struct func func;
 };
 
 struct _stack {
@@ -190,10 +207,11 @@ static int func_validate(const char *stack,
 	int ret = -EFUNCNOFOUND;
 	char *buf = slice(stack, start, end);
 
-	for (int i = 0; i < 0; i++) {
+	for (int i = 0; i < ARRAY_SIZE(allowed_functions); i++) {
 		if (str_equal(buf, allowed_functions[i].name)) {
 			func->name = allowed_functions[i].name;
 			func->func = allowed_functions[i].func;
+			func->args_len = allowed_functions[i].args_len;
 			ret = 0;
 			break;
 		}
@@ -226,6 +244,7 @@ enum process_states {
 
 	STACK_L_BR,
 	STACK_R_BR,
+	STACK_COMMA,
 	STACK_OP,
 	STACK_SKIP,
 };
@@ -235,7 +254,7 @@ static int cmp_op(enum op_type op1, enum op_type op2)
 	if (op1 == OP_L_BR)
 		return 1;
 
-	return (op1 - op2) / 2;
+	return op_prio[op2] - op_prio[op1];
 }
 
 static void stack_print(struct ctx *ctx)
@@ -251,6 +270,9 @@ static void stack_print(struct ctx *ctx)
 			break;
 		case ELEMENT_OPERATOR:
 			printf("%c ", op_type2char(buf->value->op));
+			break;
+		case ELEMENT_FUNCTION:
+			printf("%s ", buf->value->func.name);
 			break;
 		default:
 			printf("'%d' ", buf->value->type);
@@ -271,6 +293,9 @@ static void stack_print(struct ctx *ctx)
 		case ELEMENT_OPERATOR:
 			printf("%c ", op_type2char(buf->value->op));
 			break;
+		case ELEMENT_FUNCTION:
+			printf("%s ", buf->value->func.name);
+			break;
 		default:
 			break;
 		}
@@ -282,6 +307,7 @@ static int stack_insert(struct ctx *ctx, struct element *el)
 {
 	int ret = 0;
 	struct _stack *stack_el;
+	struct _stack *buf, *buf_next;
 
 	stack_el = calloc(1, sizeof(*stack_el));
 	if (!stack_el) {
@@ -297,13 +323,21 @@ static int stack_insert(struct ctx *ctx, struct element *el)
 
 		list_add(&stack_el->el, &ctx->stack.output_start);
 		break;
+	case ELEMENT_FUNCTION:
 	case ELEMENT_OPERATOR:
 		struct _stack *last_op;
 
-		printf("Adding op '%c' in stack\n", op_type2char(el->op));
+		if (el->type == ELEMENT_OPERATOR)
+			printf("Adding op '%c' in stack\n",
+			       op_type2char(el->op));
+		else
+			printf("Adding func '%s' in stack\n",
+			       el->func.name);
 
 		last_op = list_first_entry_or_null(&ctx->stack.ops_start,
 						   struct _stack, el);
+		if (last_op)
+		printf("cmp: %d ~ %d = %d\n", last_op->value->op, el->op, cmp_op(last_op->value->op, el->op));
 		if (!last_op || cmp_op(last_op->value->op, el->op) > 0) {
 			list_add(&stack_el->el, &ctx->stack.ops_start);
 		} else {
@@ -315,19 +349,20 @@ static int stack_insert(struct ctx *ctx, struct element *el)
 	case ELEMENT_L_BRACK:
 		list_add(&stack_el->el, &ctx->stack.ops_start);
 		break;
+	case ELEMENT_COMMA:
 	case ELEMENT_R_BRACK:
-		struct _stack *buf, *buf_next;
-
 		list_for_each_entry_safe(buf, buf_next,
 					 &ctx->stack.ops_start, el) {
 			if (buf->value->type == ELEMENT_L_BRACK) {
-				list_del(&buf->el);
+				if (el->type == ELEMENT_R_BRACK)
+					list_del(&buf->el);
 				break;
 			}
 
 			list_del(&buf->el);
 			list_add(&buf->el, &ctx->stack.output_start);
 		}
+		fallthrough;
 	default:
 		free(stack_el);
 		ret = 1;
@@ -337,24 +372,58 @@ static int stack_insert(struct ctx *ctx, struct element *el)
 	return ret;
 }
 
+static double *get_func_args(struct ctx *ctx, struct _stack *func)
+{
+	double *args;
+	struct _stack *buf, *buf_next;
+	unsigned int i = 0;
+	unsigned int args_len = func->value->func.args_len;
+
+	args = calloc(args_len, sizeof(double));
+	if (!args) {
+		printf("[CRIT]: Failed to allocate args\n");
+		exit(1);
+	}
+
+	printf("%d/%d\n", i, args_len);
+	list_for_each_entry_safe(buf, buf_next,
+				 &func->el, el) {
+		if (i == args_len)
+			break;
+
+		args[i] = buf->value->value;
+		printf("args[%d] = %f\n", i, buf->value->value);
+		list_del(&buf->el);
+		i++;
+	}
+
+	return args;
+}
+
 static double stack_calc(struct ctx *ctx)
 {
 	struct _stack *buf, *buf_next;
 	struct _stack *buf_d1, *buf_d2;
-	double res = 0;
+	double res = 0, *args;
 
 	list_for_each_entry_safe_reverse(buf, buf_next,
-				 &ctx->stack.output_start, el) {
-		if (buf->value->type != ELEMENT_OPERATOR)
+					 &ctx->stack.output_start, el) {
+		if (buf->value->type != ELEMENT_OPERATOR &&
+		    buf->value->type != ELEMENT_FUNCTION)
 			continue;
 
-		buf_d1 = list_next_entry(buf, el);
-		buf_d2 = list_next_entry(buf_d1, el);
-		assert(buf_d1->value);
-		assert(buf_d2->value);
+		if (buf->value->type == ELEMENT_OPERATOR) {
+			buf_d1 = list_next_entry(buf, el);
+			buf_d2 = list_next_entry(buf_d1, el);
+			assert(buf_d1->value);
+			assert(buf_d2->value);
 
-		list_del(&buf_d2->el);
-		list_del(&buf->el);
+			list_del(&buf_d2->el);
+			list_del(&buf_d1->el);
+		} else {
+			args = get_func_args(ctx, buf);
+			assert(args);
+		}
 
 		switch (buf->value->op) {
 		case OP_ADD:
@@ -370,6 +439,9 @@ static double stack_calc(struct ctx *ctx)
 			res = (double)
 				buf_d2->value->value / buf_d1->value->value;
 			break;
+		case OP_FUNC:
+			res = buf->value->func.func(args);
+			break;
 		default:
 			assert(0);
 			break;
@@ -378,7 +450,9 @@ static double stack_calc(struct ctx *ctx)
 		printf("OP: %f %c %f = %f\n", buf_d1->value->value,
 		       op_type2char(buf->value->op),
 		       buf_d2->value->value, res);
-		buf_d1->value->value = res;
+		buf->value->value = res;
+		buf->value->type = ELEMENT_DIGIT;
+		buf->value->op = OP_UNSPEC;
 
 		stack_print(ctx);
 	}
@@ -453,7 +527,6 @@ static int scan_func(struct ctx *ctx, int stack_start,
 {
 	int ret;
 	int stack_end = stack_start;
-	enum process_states stack_state = STACK_FUNC;
 
 	for (int i = stack_start; i < ctx->size; i++) {
 		char sym = ctx->input[i];
@@ -461,32 +534,24 @@ static int scan_func(struct ctx *ctx, int stack_start,
 		if (isalpha(sym) || isdigit(sym))
 			continue;
 
-		if (sym == L_BR &&
-		    stack_state == STACK_FUNC) {
+		if (sym == L_BR) {
 			stack_end = i - 1;
 
-			stack_state = STACK_FUNC_ARGS;
+			el->op = OP_FUNC;
 			el->type = ELEMENT_FUNCTION;
 			ret = func_validate(ctx->input, stack_start,
-					    stack_end, el->func);
+					    stack_end, &el->func);
 			if (ret < 0)
 				return ret;
 
 			printf("Parsed function: %s [%d, %d]\n",
-			       el->func->name, stack_start,
+			       el->func.name, stack_start,
 			       stack_end);
-			continue;
-		} else if (sym == R_BR &&
-			   stack_state == STACK_FUNC_ARGS) {
-			stack_state = STACK_UNSPEC;
-			return i;
-		} else if (sym != ',' && sym != '.' && !isdigit(sym)) {
-			printf("[ERROR]: Unexpected symbol '%c'\n", sym);
-			return -EFUNCNOFOUND;
+			return stack_end;
 		}
 
 		return func_validate(ctx->input, stack_start,
-					    stack_end, el->func);
+					    i, &el->func);
 	}
 
 	return ctx->size - 1;
@@ -504,6 +569,8 @@ static enum process_states get_sym_type(char sym)
 		return STACK_L_BR;
 	if (sym == R_BR)
 		return STACK_R_BR;
+	if (sym == ',')
+		return STACK_COMMA;
 	if (other_validate(sym))
 		return STACK_SKIP;
 	return STACK_UNSPEC;
@@ -547,6 +614,7 @@ static int ctx_process(struct ctx *ctx)
 				return ret;
 			}
 
+			i = ret;
 			if (stack_insert(ctx, el))
 				free(el);
 			break;
@@ -562,6 +630,7 @@ static int ctx_process(struct ctx *ctx)
 		case STACK_L_BR:
 			l_br_count++;
 
+			el->op = OP_L_BR;
 			el->type = ELEMENT_L_BRACK;
 
 			if (stack_insert(ctx, el))
@@ -575,6 +644,12 @@ static int ctx_process(struct ctx *ctx)
 			}
 
 			el->type = ELEMENT_R_BRACK;
+
+			if (stack_insert(ctx, el))
+				free(el);
+			break;
+		case STACK_COMMA:
+			el->type = ELEMENT_COMMA;
 
 			if (stack_insert(ctx, el))
 				free(el);
@@ -696,7 +771,7 @@ int main(void)
 	char *buf;
 	int test_failed = 0;
 
-	buf = "(2 + 2) * 3 : 2";
+	buf = "2 + log(2, log(2, 4)) - 4 * (log(1 + 7, 16 * 4))";
 	printf("\n[TEST1]: %s\n\n", buf);
 	ret = start(buf);
 	if (ret) {
@@ -704,13 +779,21 @@ int main(void)
 		test_failed++;
 	}
 
-	buf = "(.2 + 2.2) * (1 - 2) : (2. * .1)";
-	printf("\n[TEST1]: %s\n\n", buf);
-	ret = start(buf);
-	if (ret) {
-		printf("TEST1 Failed: err = %d\n", ret);
-		test_failed++;
-	}
+	// buf = "(2 + 2) * 3 : 2";
+	// printf("\n[TEST1]: %s\n\n", buf);
+	// ret = start(buf);
+	// if (ret) {
+	// 	printf("TEST1 Failed: err = %d\n", ret);
+	// 	test_failed++;
+	// }
+
+	// buf = "(.2 + 2.2) * (1 - 2) : (2. * .1)";
+	// printf("\n[TEST1]: %s\n\n", buf);
+	// ret = start(buf);
+	// if (ret) {
+	// 	printf("TEST1 Failed: err = %d\n", ret);
+	// 	test_failed++;
+	// }
 
 	// buf = ".2 + (2.2 +* (2. * .1))";
 	// printf("\n[TEST1_1]: %s\n\n", buf);
