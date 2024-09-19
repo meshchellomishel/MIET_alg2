@@ -11,6 +11,8 @@
 
 #define MAX_FN_LEN 10
 
+#define EPSILON	0.0000001
+
 #define MIN(X, Y)			\
 	({ __typeof__(X) _X = (X);	\
 	__typeof__(Y) _Y = (Y);	\
@@ -30,6 +32,8 @@
 #define ENORIGHTBRACK	4
 #define EDOUBLE		5
 #define EWRONGCOMMA	6
+#define EZERODIVIZION	7
+#define EFUNCARGSINVAL	8
 
 
 static const char ops[] = {
@@ -38,22 +42,24 @@ static const char ops[] = {
 	L_BR, R_BR
 };
 
-static double _log(double *args)
+static double _log(double *args, int *err)
 {
-	printf("log(%f, %f) = %f\n", args[1], args[0], (double)log(args[1]) / log(args[0]));
+	if (args[0] == 0 || args[1] == 0) {
+		*err = -EFUNCARGSINVAL;
+		return 0;
+	}
 	return (double)log(args[0]) / log(args[1]);
 }
 
-static double _pow(double *args)
+static double _pow(double *args, int *err)
 {
-	printf("pow(%f, %f) = %f\n", args[1], args[0], (double)pow(args[1], args[0]));
 	return (double)pow(args[2], args[1]) + args[0];
 }
 
 struct func {
 	char *name;
 
-	double (*func)(double *args);
+	double (*func)(double *args, int *err);
 
 	unsigned int args_len;
 	double *args;
@@ -330,12 +336,12 @@ static int stack_insert(struct ctx *ctx, struct element *el)
 	case EL_OPERATOR:
 		struct _stack *last_op;
 
-		if (el->type == EL_OPERATOR)
-			printf("Adding op '%c' in stack\n",
-			       op_type2char(el->op));
-		else
+		if (el->type == EL_FUNCTION)
 			printf("Adding func '%s' in stack\n",
 			       el->func.name);
+		else if (el->type == EL_OPERATOR)
+			printf("Adding op '%c' in stack\n",
+			       op_type2char(el->op));
 
 		last_op = list_first_entry_or_null(&ctx->stack.ops_start,
 						   struct _stack, el);
@@ -386,7 +392,6 @@ static double *get_func_args(struct ctx *ctx, struct _stack *func)
 		exit(1);
 	}
 
-	printf("%d/%d\n", i, args_len);
 	list_for_each_entry_safe(buf, buf_next,
 				 &func->el, el) {
 		if (i == args_len)
@@ -400,8 +405,9 @@ static double *get_func_args(struct ctx *ctx, struct _stack *func)
 	return args;
 }
 
-static double stack_calc(struct ctx *ctx)
+static int stack_calc(struct ctx *ctx)
 {
+	int ret = 0;
 	struct _stack *buf, *buf_next;
 	struct _stack *buf_d1, *buf_d2;
 	double res = 0, *args;
@@ -448,11 +454,16 @@ static double stack_calc(struct ctx *ctx)
 			res = buf_d2->value->value * buf_d1->value->value;
 			break;
 		case OP_FRAC:
+			if (!buf_d1->value->value)
+				return -EZERODIVIZION;
+
 			res = (double)
 				buf_d2->value->value / buf_d1->value->value;
 			break;
 		case OP_FUNC:
-			res = buf->value->func.func(args);
+			res = buf->value->func.func(args, &ret);
+			if (ret != 0)
+				return ret;
 			break;
 		case OP_UN_MINUS:
 			res = -buf_d1->value->value;
@@ -462,10 +473,6 @@ static double stack_calc(struct ctx *ctx)
 			break;
 		}
 
-		printf("OP: %f %c %f = %f\n",
-		       (buf_d2->value ? buf_d2->value->value : 0),
-		       op_type2char(buf->value->op),
-		       buf_d1->value->value, res);
 		buf->value->value = res;
 		buf->value->type = EL_DIGIT;
 		buf->value->op = OP_UNSPEC;
@@ -473,7 +480,25 @@ static double stack_calc(struct ctx *ctx)
 		stack_print(ctx);
 	}
 
-	return res;
+	return 0;
+}
+
+static double ctx_calc(struct ctx *ctx, int *err)
+{
+	int ret;
+	struct _stack *res;
+
+	ret = stack_calc(ctx);
+	if (ret < 0) {
+		*err = ret;
+		return ret;
+	}
+
+	res = list_first_entry_or_null(&ctx->stack.output_start,
+				       struct _stack, el);
+	if (!res->value)
+		*err = -1;
+	return res->value->value;
 }
 
 static void stack_collect(struct ctx *ctx)
@@ -757,9 +782,10 @@ static void print_err(struct ctx *ctx)
 	free(error_msg);
 }
 
-static int start(const char *msg)
+static int start(const char *msg, double ans)
 {
 	int ret;
+	double test;
 	struct ctx _ctx;
 	struct ctx *ctx = &_ctx;
 	int msg_size = strlen(msg);
@@ -798,7 +824,28 @@ static int start(const char *msg)
 
 	stack_collect(ctx);
 	stack_print(ctx);
-	printf("\nResult: %f\n", stack_calc(ctx));
+	test = ctx_calc(ctx, &ret);
+	if (ret < 0) {
+		switch (-ret) {
+		case EFUNCARGSINVAL:
+			printf("[ERROR]: Failed to calc, "
+			       "func invalid args\n");
+			break;
+		case EZERODIVIZION:
+			printf("[ERROR]: Failed to calc, "
+			       "zero division\n");
+			break;
+		default:
+			break;
+		}
+		goto on_exit;
+	}
+	printf("\nResult: %f\n", test);
+	if (test - ans > EPSILON) {
+		printf("[ERROR]: Wrong answer: %f != %f\n",
+		       test, ans);
+		return -EUNKNOWN;
+	}
 
 on_exit:
 	stack_free(ctx);
@@ -811,77 +858,78 @@ int main(void)
 	char *buf;
 	int test_failed = 0;
 
-	buf = "pow(2 + log(2, log(2, 4)) - 4 * (log(1 + 7, 16 * log(log(2, 4), 16))), 2, -1 - 0 * (2 - 1))";
+	// simplify: pow(-5, -2, -1)
+	buf = "pow(2 + log(2, log(2, 4)) - 4 * (log(1 + 7, 16 * log(log(2, 4), 16))), -2, -1 - 0 * (2 - 1))";
 	printf("\n[TEST1]: %s\n\n", buf);
-	ret = start(buf);
+	ret = start(buf, -0.96);
 	if (ret) {
 		printf("TEST1 Failed: err = %d\n", ret);
 		test_failed++;
 	}
 
-	// buf = "-(1 + (-2)) * -3 + 2";
-	// printf("\n[TEST1]: %s\n\n", buf);
-	// ret = start(buf);
-	// if (ret) {
-	// 	printf("TEST1 Failed: err = %d\n", ret);
-	// 	test_failed++;
-	// }
+	buf = "-(1 + (-2)) * -3 + 2";
+	printf("\n[TEST1]: %s\n\n", buf);
+	ret = start(buf, -1);
+	if (ret) {
+		printf("TEST1 Failed: err = %d\n", ret);
+		test_failed++;
+	}
 
-	// buf = "(.2 + 2.2) * (1 - 2) : (2. * .1)";
-	// printf("\n[TEST1]: %s\n\n", buf);
-	// ret = start(buf);
-	// if (ret) {
-	// 	printf("TEST1 Failed: err = %d\n", ret);
-	// 	test_failed++;
-	// }
+	buf = "(.2 + 2.2) * (1 - 2) : (2. * .1)";
+	printf("\n[TEST1]: %s\n\n", buf);
+	ret = start(buf, -12);
+	if (ret) {
+		printf("TEST1 Failed: err = %d\n", ret);
+		test_failed++;
+	}
 
-	// buf = ".2 + (2.2 +* (2. * .1))";
-	// printf("\n[TEST1_1]: %s\n\n", buf);
-	// ret = start(buf);
-	// if (ret != -EDOUBLE) {
-	// 	printf("TEST1_1 Failed: err = %d\n", ret);
-	// 	test_failed++;
-	// }
+	buf = ".2 + (2.2 +* (2. * .1))";
+	printf("\n[TEST1_1]: %s\n\n", buf);
+	ret = start(buf, 0);
+	if (ret != -EDOUBLE) {
+		printf("TEST1_1 Failed: err = %d\n", ret);
+		test_failed++;
+	}
 
-	// buf = ".2 + (2.2 + (2. 2. * .1))";
-	// printf("\n[TEST1_2]: %s\n\n", buf);
-	// ret = start(buf);
-	// if (ret != -EDOUBLE) {
-	// 	printf("TEST1_2 Failed: err = %d\n", ret);
-	// 	test_failed++;
-	// }
+	buf = ".2 + (2.2 + (2. 2. * .1))";
+	printf("\n[TEST1_2]: %s\n\n", buf);
+	ret = start(buf, 0);
+	if (ret != -EDOUBLE) {
+		printf("TEST1_2 Failed: err = %d\n", ret);
+		test_failed++;
+	}
 
-	// buf = ".2 + 2.2 + (2.";
-	// printf("\n[TEST2]: %s\n\n", buf);
-	// ret = start(buf);
-	// if (ret != -ENORIGHTBRACK) {
-	// 	printf("TEST2 Failed: err = %d\n", ret);
-	// 	test_failed++;
-	// }
+	buf = ".2 + 2.2 + (2.";
+	printf("\n[TEST2]: %s\n\n", buf);
+	ret = start(buf, 0);
+	if (ret != -ENORIGHTBRACK) {
+		printf("TEST2 Failed: err = %d\n", ret);
+		test_failed++;
+	}
 
-	// buf = ".2 + 2.2 + )2.";
-	// printf("\n[TEST3]: %s\n\n", buf);
-	// ret = start(buf);
-	// if (ret != -ENOLEFTBRACK) {
-	// 	printf("TEST3 Failed: err = %d\n", ret);
-	// 	test_failed++;
-	// }
+	buf = ".2 + 2.2 + )2.";
+	printf("\n[TEST3]: %s\n\n", buf);
+	ret = start(buf, 0);
+	if (ret != -ENOLEFTBRACK) {
+		printf("TEST3 Failed: err = %d\n", ret);
+		test_failed++;
+	}
 
-	// buf = ".2 + 2.2 + log2.";
-	// printf("\n[TEST4]: %s\n\n", buf);
-	// ret = start(buf);
-	// if (ret == 0) {
-	// 	printf("TEST4 Failed: err = %d\n", ret);
-	// 	test_failed++;
-	// }
+	buf = ".2 + 2.2 + log2.";
+	printf("\n[TEST4]: %s\n\n", buf);
+	ret = start(buf, 0);
+	if (ret == 0) {
+		printf("TEST4 Failed: err = %d\n", ret);
+		test_failed++;
+	}
 
-	// buf = ".2 + 2.2 + log(2.)";
-	// printf("\n[TEST5]: %s\n\n", buf);
-	// ret = start(buf);
-	// if (ret) {
-	// 	printf("TEST5 Failed: err = %d\n", ret);
-	// 	test_failed++;
-	// }
+	buf = ".2 + 2.2 + log(2.)";
+	printf("\n[TEST5]: %s\n\n", buf);
+	ret = start(buf, 0);
+	if (ret != -EWRONGCOMMA) {
+		printf("TEST5 Failed: err = %d\n", ret);
+		test_failed++;
+	}
 
 	printf("\nTest failed: %d -> %s\n",
 	       test_failed, test_failed ? "FAILED" : "OK");
