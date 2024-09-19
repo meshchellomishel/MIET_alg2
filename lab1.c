@@ -23,7 +23,6 @@
 #define OP_FR ':'
 #define L_BR '('
 #define R_BR ')'
-#define OP_FN_LOG "log"
 
 #define EUNKNOWN	1
 #define EFUNCNOFOUND	2
@@ -44,6 +43,12 @@ static double _log(double *args)
 	return (double)log(args[0]) / log(args[1]);
 }
 
+static double _pow(double *args)
+{
+	printf("pow(%f, %f) = %f\n", args[1], args[0], (double)pow(args[1], args[0]));
+	return (double)pow(args[2], args[1]) + args[0];
+}
+
 struct func {
 	char *name;
 
@@ -55,6 +60,8 @@ struct func {
 
 static const struct func allowed_functions[] = {
 	{ "log", _log, 2 },
+	{ "pow", _pow, 3 },
+
 };
 
 enum element_type {
@@ -771,7 +778,7 @@ int main(void)
 	char *buf;
 	int test_failed = 0;
 
-	buf = "2 + log(2, log(2, 4)) - 4 * (log(1 + 7, 16 * 4))";
+	buf = "pow(2 + log(2, log(2, 4)) - 4 * (log(1 + 7, 16 * log(log(2, 4), 16))), 2, 1)";
 	printf("\n[TEST1]: %s\n\n", buf);
 	ret = start(buf);
 	if (ret) {
