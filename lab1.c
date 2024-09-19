@@ -35,13 +35,6 @@
 #define EZERODIVIZION	7
 #define EFUNCARGSINVAL	8
 
-
-static const char ops[] = {
-	OP_EQ, OP_AD, OP_MN,
-	OP_DT, OP_FR,
-	L_BR, R_BR
-};
-
 static double _log(double *args, int *err)
 {
 	if (args[0] == 0 || args[1] == 0) {
@@ -621,7 +614,7 @@ static int ctx_process(struct ctx *ctx)
 {
 	int ret, buf;
 	struct element *el;
-	int br_deep = 0, fn_br_deep = 0;
+	// int br_deep = 0, fn_br_deep = 0;
 	int l_br_count = 0, r_br_count = 0;
 	int comma_count = 0, fn_comma_count = 0;
 	enum element_type stack_state = EL_UNSPEC;
@@ -928,6 +921,22 @@ int main(void)
 	ret = start(buf, 0);
 	if (ret != -EWRONGCOMMA) {
 		printf("TEST5 Failed: err = %d\n", ret);
+		test_failed++;
+	}
+
+	buf = "(1 + (-2)) * -3 : (1 + -1)";
+	printf("\n[TEST6]: %s\n\n", buf);
+	ret = start(buf, -1);
+	if (ret != -EZERODIVIZION) {
+		printf("TEST6 Failed: err = %d\n", ret);
+		test_failed++;
+	}
+
+	buf = "log(1 +- 1, 1)";
+	printf("\n[TEST7]: %s\n\n", buf);
+	ret = start(buf, -1);
+	if (ret != -EFUNCARGSINVAL) {
+		printf("TEST7 Failed: err = %d\n", ret);
 		test_failed++;
 	}
 
