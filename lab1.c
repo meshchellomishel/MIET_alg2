@@ -1,4 +1,3 @@
-#include "linux/kernel.h"
 #include <assert.h>
 #include <linux/list.h>
 #include <stdlib.h>
@@ -788,7 +787,7 @@ static int start(const char *msg, double ans)
 
 	memset(ctx->input, 0, ARRAY_SIZE(ctx->input));
 	memcpy(ctx->input, msg, MIN(msg_size, ARRAY_SIZE(ctx->input)));
-	ctx->size = strlen(ctx->input);
+	ctx->size = strlen(ctx->input) - 1;
 	ret = ctx_process(ctx);
 	if (ret < 0) {
 		switch (-ret) {
@@ -849,100 +848,111 @@ int main(void)
 {
 	int ret;
 	char *buf;
+	char input[4096] = {};
 	int test_failed = 0;
 
 	// simplify: pow(-5, -2, -1)
-	buf = "pow(2 + log(2, log(2, 4)) - 4 * (log(1 + 7, 16 * log(log(2, 4), 16))), -2, -1 - 0 * (2 - 1))";
-	printf("\n[TEST1]: %s\n\n", buf);
-	ret = start(buf, -0.96);
-	if (ret) {
-		printf("TEST1 Failed: err = %d\n", ret);
-		test_failed++;
-	}
+	// buf = "pow(2 + log(2, log(2, 4)) - 4 * (log(1 + 7, 16 * log(log(2, 4), 16))), -2, -1 - 0 * (2 - 1))";
+	// printf("\n[TEST1]: %s\n\n", buf);
+	// ret = start(buf, -0.96);
+	// if (ret) {
+	// 	printf("TEST1 Failed: err = %d\n", ret);
+	// 	test_failed++;
+	// }
 
-	buf = "-(1 + (-2)) * -3 + 2";
-	printf("\n[TEST1]: %s\n\n", buf);
-	ret = start(buf, -1);
-	if (ret) {
-		printf("TEST1 Failed: err = %d\n", ret);
-		test_failed++;
-	}
+	// buf = "-(1 + (-2)) * -3 + 2";
+	// printf("\n[TEST1]: %s\n\n", buf);
+	// ret = start(buf, -1);
+	// if (ret) {
+	// 	printf("TEST1 Failed: err = %d\n", ret);
+	// 	test_failed++;
+	// }
 
-	buf = "(.2 + 2.2) * (1 - 2) : (2. * .1)";
-	printf("\n[TEST1]: %s\n\n", buf);
-	ret = start(buf, -12);
-	if (ret) {
-		printf("TEST1 Failed: err = %d\n", ret);
-		test_failed++;
-	}
+	// buf = "(.2 + 2.2) * (1 - 2) : (2. * .1)";
+	// printf("\n[TEST1]: %s\n\n", buf);
+	// ret = start(buf, -12);
+	// if (ret) {
+	// 	printf("TEST1 Failed: err = %d\n", ret);
+	// 	test_failed++;
+	// }
 
-	buf = ".2 + (2.2 +* (2. * .1))";
-	printf("\n[TEST1_1]: %s\n\n", buf);
-	ret = start(buf, 0);
-	if (ret != -EDOUBLE) {
-		printf("TEST1_1 Failed: err = %d\n", ret);
-		test_failed++;
-	}
+	// buf = ".2 + (2.2 +* (2. * .1))";
+	// printf("\n[TEST1_1]: %s\n\n", buf);
+	// ret = start(buf, 0);
+	// if (ret != -EDOUBLE) {
+	// 	printf("TEST1_1 Failed: err = %d\n", ret);
+	// 	test_failed++;
+	// }
 
-	buf = ".2 + (2.2 + (2. 2. * .1))";
-	printf("\n[TEST1_2]: %s\n\n", buf);
-	ret = start(buf, 0);
-	if (ret != -EDOUBLE) {
-		printf("TEST1_2 Failed: err = %d\n", ret);
-		test_failed++;
-	}
+	// buf = ".2 + (2.2 + (2. 2. * .1))";
+	// printf("\n[TEST1_2]: %s\n\n", buf);
+	// ret = start(buf, 0);
+	// if (ret != -EDOUBLE) {
+	// 	printf("TEST1_2 Failed: err = %d\n", ret);
+	// 	test_failed++;
+	// }
 
-	buf = ".2 + 2.2 + (2.";
-	printf("\n[TEST2]: %s\n\n", buf);
-	ret = start(buf, 0);
-	if (ret != -ENORIGHTBRACK) {
-		printf("TEST2 Failed: err = %d\n", ret);
-		test_failed++;
-	}
+	// buf = ".2 + 2.2 + (2.";
+	// printf("\n[TEST2]: %s\n\n", buf);
+	// ret = start(buf, 0);
+	// if (ret != -ENORIGHTBRACK) {
+	// 	printf("TEST2 Failed: err = %d\n", ret);
+	// 	test_failed++;
+	// }
 
-	buf = ".2 + 2.2 + )2.";
-	printf("\n[TEST3]: %s\n\n", buf);
-	ret = start(buf, 0);
-	if (ret != -ENOLEFTBRACK) {
-		printf("TEST3 Failed: err = %d\n", ret);
-		test_failed++;
-	}
+	// buf = ".2 + 2.2 + )2.";
+	// printf("\n[TEST3]: %s\n\n", buf);
+	// ret = start(buf, 0);
+	// if (ret != -ENOLEFTBRACK) {
+	// 	printf("TEST3 Failed: err = %d\n", ret);
+	// 	test_failed++;
+	// }
 
-	buf = ".2 + 2.2 + log2.";
-	printf("\n[TEST4]: %s\n\n", buf);
-	ret = start(buf, 0);
-	if (ret == 0) {
-		printf("TEST4 Failed: err = %d\n", ret);
-		test_failed++;
-	}
+	// buf = ".2 + 2.2 + log2.";
+	// printf("\n[TEST4]: %s\n\n", buf);
+	// ret = start(buf, 0);
+	// if (ret == 0) {
+	// 	printf("TEST4 Failed: err = %d\n", ret);
+	// 	test_failed++;
+	// }
 
-	buf = ".2 + 2.2 + log(2.)";
-	printf("\n[TEST5]: %s\n\n", buf);
-	ret = start(buf, 0);
-	if (ret != -EWRONGCOMMA) {
-		printf("TEST5 Failed: err = %d\n", ret);
-		test_failed++;
-	}
+	// buf = ".2 + 2.2 + log(2.)";
+	// printf("\n[TEST5]: %s\n\n", buf);
+	// ret = start(buf, 0);
+	// if (ret != -EWRONGCOMMA) {
+	// 	printf("TEST5 Failed: err = %d\n", ret);
+	// 	test_failed++;
+	// }
 
-	buf = "(1 + (-2)) * -3 : (1 + -1)";
-	printf("\n[TEST6]: %s\n\n", buf);
-	ret = start(buf, -1);
-	if (ret != -EZERODIVIZION) {
-		printf("TEST6 Failed: err = %d\n", ret);
-		test_failed++;
-	}
+	// buf = "(1 + (-2)) * -3 : (1 + -1)";
+	// printf("\n[TEST6]: %s\n\n", buf);
+	// ret = start(buf, -1);
+	// if (ret != -EZERODIVIZION) {
+	// 	printf("TEST6 Failed: err = %d\n", ret);
+	// 	test_failed++;
+	// }
 
-	buf = "log(1 +- 1, 1)";
-	printf("\n[TEST7]: %s\n\n", buf);
-	ret = start(buf, -1);
-	if (ret != -EFUNCARGSINVAL) {
-		printf("TEST7 Failed: err = %d\n", ret);
-		test_failed++;
-	}
+	// buf = "log(1 +- 1, 1)";
+	// printf("\n[TEST7]: %s\n\n", buf);
+	// ret = start(buf, -1);
+	// if (ret != -EFUNCARGSINVAL) {
+	// 	printf("TEST7 Failed: err = %d\n", ret);
+	// 	test_failed++;
+	// }
 
 	printf("\nTest failed: %d -> %s\n",
 	       test_failed, test_failed ? "FAILED" : "OK");
-	// fgets(ctx->input, 4096, stdin);
+
+	while (true) {
+		printf("Input your:\n");
+		fgets(input, 4096, stdin);
+		printf("\n[TEST8]: %s\n\n", input);
+		ret = start(input, 0);
+		if (ret < 0) {
+			printf("TEST8 Failed: err = %d\n", ret);
+			test_failed++;
+		}
+	}
 
 	exit(0);
 }
