@@ -14,6 +14,8 @@
 #define NDA_BUF_SIZE	128
 
 
+#define for_each_alphabet	for (uint16_t i = 0; i < a_counter; i++)
+
 static char alphabet[512] = {};
 static uint16_t a_counter = 0;
 
@@ -290,17 +292,21 @@ int ctx_fill_nda_from_file(struct ctx *ctx)
 	return 0;
 }
 
-static int ctx_concat_points(struct ctx *ctx,
-			     struct hpoint *p,
-			     char key,
-			     char *new_point_name)
+static struct hpoint *ctx_concat_points(struct ctx *ctx,
+					struct hpoint *p,
+					char key,
+					char *new_point_name)
 {
 	struct hpoint *new_point, *p1, *p2;
-	struct hjump *j;
+	struct hjump *j, *j2, *j3;
 	struct hlist_node *h_tmp;
 	uint32_t c_l = 0;
 	uint32_t bkt;
+	bool point_created = false;
+	bool need_continue = false;
+	DECLARE_HASHTABLE(set, 10);
 
+	hash_init(set);
 	hash_for_each_possible(p->head_jump,
 			       j, node_jump, key) {
 		printf("p: '%s'\n", p->name);
@@ -310,16 +316,23 @@ static int ctx_concat_points(struct ctx *ctx,
 		c_l = strlen(new_point_name);
 		new_point_name[c_l] = '-';
 		c_l++;
+
+		hash_for_each(j->hpoint->head_jump,
+			      bkt, j2, node_jump) {
+			j3 = jump_create(j2->key);
+			j3->hpoint = j2->hpoint;
+			hash_add(set, &j3->node_jump, j3->key);
+		}
 	}
 	new_point_name[c_l - 1] = '\0';
 	printf("p2: '%s'\n", new_point_name);
 
 	new_point = point_find(&ctx->nfa, new_point_name);
-	if (new_point)
-		return 0;
-
-	new_point = point_alloc(new_point_name);
-	hash_add(ctx->nfa.head, &new_point->node_point, new_point->key);
+	if (!new_point) {
+		point_created = true;
+		new_point = point_alloc(new_point_name);
+		hash_add(ctx->nfa.head, &new_point->node_point, new_point->key);
+	}
 
 	hash_for_each_possible_safe(p->head_jump, j,
 				    h_tmp, node_jump, key) {
@@ -329,49 +342,109 @@ static int ctx_concat_points(struct ctx *ctx,
 	j = jump_create(key);
 	j->hpoint = new_point;
 	hash_add(p->head_jump, &j->node_jump, key);
-	return 0;
+
+	if (!point_created)
+		return new_point;
+
+	bkt = 0;
+	hash_for_each(set, bkt, j2, node_jump) {
+		char c = j2->key;
+
+		need_continue = false;
+		hash_for_each_possible(new_point->head_jump, j3, node_jump, c) {
+			if (j3->value == j2->value &&
+			    j2->hpoint == j3->hpoint)
+				need_continue = true;
+		}
+
+		if (need_continue)
+			continue;
+
+		j = jump_create(c);
+		memcpy(j, j2, sizeof(*j2));
+		hash_add(new_point->head_jump, &j->node_jump, c);
+	}
+
+	return new_point;
+}
+
+static bool validate_point(struct hpoint *p,
+			   char c,
+			   uint32_t *j_len,
+			   uint32_t *s_len)
+{
+	struct hjump *j;
+
+	hash_for_each_possible(p->head_jump,
+			       j, node_jump, c) {
+		*j_len += 1;
+		*s_len += strlen(j->hpoint->name);
+	}
+
+	if (*j_len <= 1) {
+		p->dfp = true;
+		return true;
+	}
+
+	printf("Point '%s' is NFP: %d\n",
+	       p->name, *j_len);
+	p->dfp = false;
+	return false;
 }
 
 static int ctx_calc_dfa(struct ctx *ctx)
 {
 	uint32_t bkt;
 	uint32_t j_len = 0, s_len = 0;
-	struct hpoint *p1, *p2;
+	struct hpoint *p1, *p2, *new_point;
 	struct hjump *j;
-	char *new_point;
+	char *new_point_name;
+	bool valid = false;
+	bool begin = true;
+	bool nfp_exists = false;
 
-	hash_for_each(ctx->nfa.head, bkt, p1, node_point) {
-		if (p1->dfp)
-			continue;
+	while (begin || nfp_exists) {
+		begin = false;
+		nfp_exists = false;
 
-		for (uint16_t i = 0; i < a_counter; i++) {
-			char c = alphabet[i];
-			uint32_t c_l = 0;
-
-			j_len = 0;
-
-			hash_for_each_possible(p1->head_jump,
-					       j, node_jump, c) {
-				j_len++;
-				s_len += strlen(j->hpoint->name);
-			}
-
-			if (j_len <= 1) {
-				p1->dfp = true;
+		hash_for_each(ctx->nfa.head, bkt, p1, node_point) {
+			if (p1->dfp) {
+				printf("Skip %s\n", p1->name);
 				continue;
 			}
 
-			printf("Point '%s' is NFP: %d\n",
-			       p1->name, j_len);
+			for (uint16_t i = 0; i < a_counter; i++) {
+				char c = alphabet[i];
+				uint32_t c_l = 0;
 
-			new_point = calloc(j_len + s_len, sizeof(char));
-			if (!new_point)
-				err_no_mem();
+				j_len = 0;
+				s_len = 0;
+				valid = validate_point(p1, c, &j_len, &s_len);
+				if (valid)
+					continue;
+				else
+					nfp_exists = true;
 
-			ctx_concat_points(ctx, p1, c, new_point);
+				new_point_name = calloc(j_len + s_len,
+							sizeof(char));
+				if (!new_point_name)
+					err_no_mem();
 
-			free(new_point);
+				new_point = ctx_concat_points(ctx, p1, c,
+							      new_point_name);
+				j_len = 0;
+				s_len = 0;
+				valid = validate_point(new_point, c,
+						       &j_len, &s_len);
+				printf("new point is %d\n", valid);
+				if (!valid)
+					nfp_exists = true;
+
+				free(new_point_name);
+			}
 		}
+
+		printf("valid: %d\n", nfp_exists);
 	}
 
 	return 0;
