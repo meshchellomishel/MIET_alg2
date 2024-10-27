@@ -1,4 +1,5 @@
 #include "linux/kernel.h"
+#include "linux/list.h"
 #include "linux/types.h"
 #include <stdbool.h>
 #include <errno.h>
@@ -47,6 +48,7 @@ struct hpoint {
 	DECLARE_HASHTABLE(head_jump, 10);
 
 	bool dfp;
+	bool start;
 };
 
 struct hjump {
@@ -254,39 +256,56 @@ static void alphabet_put(const char c)
 	a_counter++;
 }
 
-int ctx_fill_nda_from_file(struct ctx *ctx)
+static int fill_point(struct ctx *ctx, const char *buf,
+		      bool begin)
 {
-	assert(ctx->file);
+	if (!buf || buf[0] == '\r') {
+		printf("File was ended\n");
+		return -1;
+	}
+
 	int ret;
 	struct hpoint *p1, *p2;
 	struct hjump *j;
 	struct parsed_line line;
+
+	ret = scan_str(buf, &line);
+	if (ret < 0) {
+		printf("[ERROR]: Failed to parse line\n");
+		return ret;
+	}
+	p1 = point_find_or_create(&ctx->nfa, line.point_from);
+	p1->start |= begin;
+	j = jump_create(line.value);
+	alphabet_put(j->value);
+	p2 = point_find_or_create(&ctx->nfa, line.point_to);
+
+	j->hpoint = p2;
+	hash_add(p1->head_jump, &j->node_jump, j->key);
+
+	return 0;
+}
+
+int ctx_fill_nda_from_file(struct ctx *ctx)
+{
+	assert(ctx->file);
+	int ret;
 	char buf[NDA_BUF_SIZE] = {};
 	char *buf_ptr;
 
 	buf_ptr = fgets(buf, NDA_BUF_SIZE, ctx->file);
+	printf("line: %s", buf_ptr);
+	ret = fill_point(ctx, buf_ptr, true);
+	if (ret < 0)
+		return ret;
+
 	while (buf_ptr) {
-		if (!buf_ptr || buf_ptr[0] == '\r') {
-			printf("File was ended\n");
-			break;
-		}
+		buf_ptr = fgets(buf, NDA_BUF_SIZE, ctx->file);
 
 		printf("line: %s", buf_ptr);
-
-		ret = scan_str(buf_ptr, &line);
-		if (ret < 0) {
-			printf("[ERROR]: Failed to parse line\n");
+		ret = fill_point(ctx, buf_ptr, false);
+		if (ret < 0)
 			return ret;
-		}
-		p1 = point_find_or_create(&ctx->nfa, line.point_from);
-		j = jump_create(line.value);
-		alphabet_put(j->value);
-		p2 = point_find_or_create(&ctx->nfa, line.point_to);
-
-		j->hpoint = p2;
-		hash_add(p1->head_jump, &j->node_jump, j->key);
-
-		buf_ptr = fgets(buf, NDA_BUF_SIZE, ctx->file);
 	}
 
 	return 0;
@@ -297,13 +316,14 @@ static struct hpoint *ctx_concat_points(struct ctx *ctx,
 					char key,
 					char *new_point_name)
 {
-	struct hpoint *new_point, *p1, *p2;
+	struct hpoint *new_point;
 	struct hjump *j, *j2, *j3;
 	struct hlist_node *h_tmp;
 	uint32_t c_l = 0;
 	uint32_t bkt;
 	bool point_created = false;
 	bool need_continue = false;
+	bool begin = false;
 	DECLARE_HASHTABLE(set, 10);
 
 	hash_init(set);
@@ -316,6 +336,7 @@ static struct hpoint *ctx_concat_points(struct ctx *ctx,
 		c_l = strlen(new_point_name);
 		new_point_name[c_l] = '-';
 		c_l++;
+		begin |= j->hpoint->start;
 
 		hash_for_each(j->hpoint->head_jump,
 			      bkt, j2, node_jump) {
@@ -333,6 +354,7 @@ static struct hpoint *ctx_concat_points(struct ctx *ctx,
 		new_point = point_alloc(new_point_name);
 		hash_add(ctx->nfa.head, &new_point->node_point, new_point->key);
 	}
+	new_point->start = begin;
 
 	hash_for_each_possible_safe(p->head_jump, j,
 				    h_tmp, node_jump, key) {
@@ -392,12 +414,132 @@ static bool validate_point(struct hpoint *p,
 	return false;
 }
 
+static bool ctx_dfa_validate(struct ctx *ctx,
+			     const char *test)
+{
+	char c;
+	uint32_t bkt;
+	bool point_exists = false;
+	struct hjump *j1, *jf;
+	struct hpoint *p1, *p2, *pn;
+	DECLARE_HASHTABLE(externs, 5);
+
+	hash_init(externs);
+	hash_for_each(ctx->nfa.head, bkt, p1, node_point) {
+		if (!p1->start)
+			continue;
+
+		point_exists = false;
+		printf("p1 key: %d\n", p1->key);
+		hash_for_each_possible(externs, p2, node_point,
+				       p1->key) {
+			printf("p name: %s\n", p2->name);
+
+			if (str_equal(p1->name, p2->name)) {
+				point_exists = true;
+				break;
+			}
+		}
+
+		if (point_exists)
+			continue;
+
+		pn = point_alloc(p1->name);
+		printf("Hash added : %s\n", pn->name);
+		hash_add(externs, &pn->node_point, pn->key);
+	}
+
+	hash_for_each(externs, bkt, p1, node_point) {
+		uint32_t i = 0, len = strlen(test);
+
+		p2 = point_find(&ctx->nfa, p1->name);
+		while (i < len && !str_equal(p2->name, "f0")) {
+			c = test[i];
+			jf = NULL;
+
+			hash_for_each_possible(p2->head_jump, j1,
+					       node_jump, c) {
+				printf("val: %c\n", j1->value);
+				jf = j1;
+				break;
+			}
+
+			if (!jf) {
+				printf("No jumps found for Q(%s, %c)\n",
+				       p2->name, c);
+				return false;
+			}
+
+			printf("Q(%s, %c) = %s\n",
+			       p2->name, c, jf->hpoint->name);
+			p2 = jf->hpoint;
+			i++;
+		}
+
+		if (str_equal(p2->name, "f0"))
+			return true;
+	}
+
+	return false;
+}
+
+static void delete_usless(struct ctx *ctx)
+{
+	uint32_t bkt1, bkt2;
+	struct hpoint *p1, *p2, *pn, *jp;
+	struct hjump *j1;
+	bool point_exists = false;
+	DECLARE_HASHTABLE(head, 10);
+
+	hash_for_each(ctx->nfa.head, bkt1, p1, node_point) {
+		hash_for_each(p1->head_jump, bkt2, j1, node_jump) {
+			point_exists = false;
+
+			jp = j1->hpoint;
+
+			hash_for_each_possible(head, p2, node_point, jp->key) {
+				if (str_equal(p2->name, jp->name)) {
+					point_exists = true;
+					break;
+				}
+			}
+
+			if (point_exists)
+				continue;
+
+			pn = point_alloc(jp->name);
+
+			hash_add(head, &pn->node_point, pn->key);
+		}
+
+		if (p1->start) {
+			printf("Add start: %s\n", p1->name);
+			pn = point_alloc(p1->name);
+
+			hash_add(head, &pn->node_point, pn->key);
+		}
+	}
+
+	hash_for_each(ctx->nfa.head, bkt1, p1, node_point) {
+		point_exists = false;
+
+		hash_for_each_possible(head, p2, node_point, p1->key) {
+			if (str_equal(p2->name, p1->name)) {
+				point_exists = true;
+				break;
+			}
+		}
+
+		if (!point_exists)
+			hash_del(&p1->node_point);
+	}
+}
+
 static int ctx_calc_dfa(struct ctx *ctx)
 {
 	uint32_t bkt;
 	uint32_t j_len = 0, s_len = 0;
-	struct hpoint *p1, *p2, *new_point;
-	struct hjump *j;
+	struct hpoint *p1, *new_point;
 	char *new_point_name;
 	bool valid = false;
 	bool begin = true;
@@ -415,7 +557,6 @@ static int ctx_calc_dfa(struct ctx *ctx)
 
 			for (uint16_t i = 0; i < a_counter; i++) {
 				char c = alphabet[i];
-				uint32_t c_l = 0;
 
 				j_len = 0;
 				s_len = 0;
@@ -453,7 +594,7 @@ static int ctx_calc_dfa(struct ctx *ctx)
 static void matrix_print(struct func_matrix *matrix)
 {
 	uint32_t bkt;
-	struct hpoint *p1, *p2;
+	struct hpoint *p1;
 	struct hjump *j;
 
 	printf("[TABLE]:\n");
@@ -463,7 +604,10 @@ static void matrix_print(struct func_matrix *matrix)
 	printf("\n");
 
 	hash_for_each(matrix->head, bkt, p1, node_point) {
-		printf("%s\t", p1->name);
+		if (p1->start)
+			printf("->%s\t", p1->name);
+		else
+			printf("%s\t", p1->name);
 		for (uint16_t i = 0; i < a_counter; i++) {
 			char c = alphabet[i];
 
@@ -506,6 +650,12 @@ int main(int argc, char **argv)
 	matrix_print(&ctx->nfa);
 	ctx_calc_dfa(ctx);
 	matrix_print(&ctx->nfa);
+	delete_usless(ctx);
+	matrix_print(&ctx->nfa);
+	if (ctx_dfa_validate(ctx, "absm"))
+		printf("Valid for dfa\n");
+	else
+		printf("Not valid for dfa\n");
 
 	ctx_destroy(ctx);
 	return 0;
