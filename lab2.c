@@ -478,6 +478,7 @@ static bool ctx_dfa_validate(struct ctx *ctx,
 	return false;
 }
 
+<<<<<<< HEAD
 static void delete_useless_on_start(struct ctx *ctx)
 {
 	uint32_t bkt1, bkt2, bkt3;
@@ -508,6 +509,30 @@ static void delete_useless_on_start(struct ctx *ctx)
 
 		hash_for_each_possible(useless, p2, node_point, p1->key) {
 			if (str_equal(p2->name, p1->name)) {
+=======
+static bool ctx_dfa_validate(struct ctx *ctx,
+			     const char *test)
+{
+	char c;
+	uint32_t bkt;
+	bool point_exists = false;
+	struct hjump *j1, *jf;
+	struct hpoint *p1, *p2, *pn;
+	DECLARE_HASHTABLE(externs, 5);
+
+	hash_init(externs);
+	hash_for_each(ctx->nfa.head, bkt, p1, node_point) {
+		if (!p1->start)
+			continue;
+
+		point_exists = false;
+		printf("p1 key: %d\n", p1->key);
+		hash_for_each_possible(externs, p2, node_point,
+				       p1->key) {
+			printf("p name: %s\n", p2->name);
+
+			if (str_equal(p1->name, p2->name)) {
+>>>>>>> 23212a2f08e5f17b6346cbb12aea374df8e4fb6d
 				point_exists = true;
 				break;
 			}
@@ -517,6 +542,7 @@ static void delete_useless_on_start(struct ctx *ctx)
 			continue;
 
 		pn = point_alloc(p1->name);
+<<<<<<< HEAD
 
 		hash_add(useless, &pn->node_point, pn->key);
 		hash_del(&p1->node_point);
@@ -534,19 +560,65 @@ static void delete_useless_on_start(struct ctx *ctx)
 			}
 		}
 	}
+=======
+		printf("Hash added : %s\n", pn->name);
+		hash_add(externs, &pn->node_point, pn->key);
+	}
+
+	hash_for_each(externs, bkt, p1, node_point) {
+		uint32_t i = 0, len = strlen(test);
+
+		p2 = point_find(&ctx->nfa, p1->name);
+		while (i < len && !str_equal(p2->name, "f0")) {
+			c = test[i];
+			jf = NULL;
+
+			hash_for_each_possible(p2->head_jump, j1,
+					       node_jump, c) {
+				printf("val: %c\n", j1->value);
+				jf = j1;
+				break;
+			}
+
+			if (!jf) {
+				printf("No jumps found for Q(%s, %c)\n",
+				       p2->name, c);
+				return false;
+			}
+
+			printf("Q(%s, %c) = %s\n",
+			       p2->name, c, jf->hpoint->name);
+			p2 = jf->hpoint;
+			i++;
+		}
+
+		if (str_equal(p2->name, "f0"))
+			return true;
+	}
+
+	return false;
+>>>>>>> 23212a2f08e5f17b6346cbb12aea374df8e4fb6d
 }
 
 static void delete_usless(struct ctx *ctx)
 {
 	uint32_t bkt1, bkt2;
 	struct hpoint *p1, *p2, *pn, *jp;
+<<<<<<< HEAD
 	struct hlist_node *s1, *s2;
+=======
+>>>>>>> 23212a2f08e5f17b6346cbb12aea374df8e4fb6d
 	struct hjump *j1;
 	bool point_exists = false;
 	DECLARE_HASHTABLE(head, 10);
 
+<<<<<<< HEAD
 	hash_for_each_safe(ctx->nfa.head, bkt1, s1, p1, node_point) {
 		hash_for_each_safe(p1->head_jump, bkt2, s2, j1, node_jump) {
+=======
+	hash_for_each(ctx->nfa.head, bkt1, p1, node_point) {
+		hash_for_each(p1->head_jump, bkt2, j1, node_jump) {
+>>>>>>> 23212a2f08e5f17b6346cbb12aea374df8e4fb6d
 			point_exists = false;
 
 			jp = j1->hpoint;
@@ -593,7 +665,10 @@ static int ctx_calc_dfa(struct ctx *ctx)
 {
 	uint32_t bkt, bkt1;
 	uint32_t j_len = 0, s_len = 0;
+<<<<<<< HEAD
 	struct hjump *j1;
+=======
+>>>>>>> 23212a2f08e5f17b6346cbb12aea374df8e4fb6d
 	struct hpoint *p1, *new_point;
 	char *new_point_name;
 	bool valid = false;
@@ -611,8 +686,13 @@ static int ctx_calc_dfa(struct ctx *ctx)
 				continue;
 			}
 
+<<<<<<< HEAD
 			hash_for_each(p1->head_jump, bkt1, j1, node_jump) {
 				char c = j1->value;
+=======
+			for (uint16_t i = 0; i < a_counter; i++) {
+				char c = alphabet[i];
+>>>>>>> 23212a2f08e5f17b6346cbb12aea374df8e4fb6d
 
 				j_len = 0;
 				s_len = 0;
@@ -711,7 +791,11 @@ int main(int argc, char **argv)
 	matrix_print(&ctx->nfa);
 	delete_usless(ctx);
 	matrix_print(&ctx->nfa);
+<<<<<<< HEAD
 	if (ctx_dfa_validate(ctx, "ahm"))
+=======
+	if (ctx_dfa_validate(ctx, "absm"))
+>>>>>>> 23212a2f08e5f17b6346cbb12aea374df8e4fb6d
 		printf("Valid for dfa\n");
 	else
 		printf("Not valid for dfa\n");
