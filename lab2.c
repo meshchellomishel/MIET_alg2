@@ -384,7 +384,6 @@ static bool validate_point(struct hpoint *p,
 {
 	char c;
 	struct hjump *j;
-	uint32_t bkt, bkt1;
 
 	printf("P-name: %s\n", p->name);
 
@@ -477,6 +476,64 @@ static bool ctx_dfa_validate(struct ctx *ctx,
 	}
 
 	return false;
+}
+
+static void delete_useless_on_start(struct ctx *ctx)
+{
+	uint32_t bkt1, bkt2, bkt3;
+	struct hpoint *p1, *p2, *pn;
+	struct hlist_node *s1, *s2;
+	struct hjump *j1;
+	char *cmp_name;
+	bool point_have_act = false;
+	bool point_exists = false;
+	DECLARE_HASHTABLE(useless, 10);
+
+	hash_init(useless);
+	hash_for_each_safe(ctx->nfa.head, bkt1, s1, p1, node_point) {
+		cmp_name = p1->name;
+		point_have_act = false;
+		point_exists = false;
+		hash_for_each_safe(p1->head_jump, bkt2, s2, j1, node_jump) {
+			if (!str_equal(cmp_name, j1->hpoint->name)) {
+				printf("[INFO]: Point '%s' not useless\n",
+				       cmp_name);
+				point_have_act = true;
+				break;
+			}
+		}
+
+		if (point_have_act || p1->name[0] == 'f')
+			continue;
+
+		hash_for_each_possible(useless, p2, node_point, p1->key) {
+			if (str_equal(p2->name, p1->name)) {
+				point_exists = true;
+				break;
+			}
+		}
+
+		if (point_exists)
+			continue;
+
+		pn = point_alloc(p1->name);
+
+		hash_add(useless, &pn->node_point, pn->key);
+		hash_del(&p1->node_point);
+
+		printf("[INFO]: Point '%s' is useless\n",
+		       p1->name);
+	}
+
+	hash_for_each_safe(useless, bkt1, s1, p1, node_point) {
+		hash_for_each(ctx->nfa.head, bkt2, p2, node_point) {
+			hash_for_each_safe(p2->head_jump, bkt3, s2,
+					   j1, node_jump) {
+				if (str_equal(p1->name, j1->hpoint->name))
+					hash_del(&j1->node_jump);
+			}
+		}
+	}
 }
 
 static void delete_usless(struct ctx *ctx)
@@ -647,12 +704,14 @@ int main(int argc, char **argv)
 	}
 
 	ctx_fill_nda_from_file(ctx);
+	printf("[TABLE DELETED USELESS]\n");
+	delete_useless_on_start(ctx);
 	matrix_print(&ctx->nfa);
 	ctx_calc_dfa(ctx);
 	matrix_print(&ctx->nfa);
 	delete_usless(ctx);
 	matrix_print(&ctx->nfa);
-	if (ctx_dfa_validate(ctx, "absm"))
+	if (ctx_dfa_validate(ctx, "ahm"))
 		printf("Valid for dfa\n");
 	else
 		printf("Not valid for dfa\n");
