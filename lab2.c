@@ -487,53 +487,65 @@ static void delete_useless_on_start(struct ctx *ctx)
 	char *cmp_name;
 	bool point_have_act = false;
 	bool point_exists = false;
+	bool useless_exists = true;
 	DECLARE_HASHTABLE(useless, 10);
 
 	hash_init(useless);
-	hash_for_each_safe(ctx->nfa.head, bkt1, s1, p1, node_point) {
-		cmp_name = p1->name;
-		point_have_act = false;
-		point_exists = false;
-		hash_for_each_safe(p1->head_jump, bkt2, s2, j1, node_jump) {
-			if (!str_equal(cmp_name, j1->hpoint->name)) {
-				printf("[INFO]: Point '%s' not useless\n",
-				       cmp_name);
-				point_have_act = true;
-				break;
+	while (useless_exists) {
+		printf("[INFO]: Find useless loop...\n");
+		useless_exists = false;
+
+		hash_for_each_safe(ctx->nfa.head, bkt1, s1, p1, node_point) {
+			cmp_name = p1->name;
+			point_have_act = false;
+			point_exists = false;
+			hash_for_each_safe(p1->head_jump, bkt2, s2, j1,
+					   node_jump) {
+				if (!str_equal(cmp_name, j1->hpoint->name)) {
+					printf("[INFO]: Point '%s' "
+					       "not useless\n", cmp_name);
+					point_have_act = true;
+					break;
+				}
 			}
+
+			if (point_have_act || p1->name[0] == 'f')
+				continue;
+
+			hash_for_each_possible(useless, p2, node_point,
+					       p1->key) {
+				if (str_equal(p2->name, p1->name)) {
+					point_exists = true;
+					break;
+				}
+			}
+
+			if (point_exists)
+				continue;
+
+			pn = point_alloc(p1->name);
+
+			hash_add(useless, &pn->node_point, pn->key);
+			hash_del(&p1->node_point);
+
+			printf("[INFO]: Point '%s' is useless\n",
+			       p1->name);
+			useless_exists = true;
 		}
 
-		if (point_have_act || p1->name[0] == 'f')
-			continue;
-
-		hash_for_each_possible(useless, p2, node_point, p1->key) {
-			if (str_equal(p2->name, p1->name)) {
-				point_exists = true;
-				break;
+		hash_for_each_safe(useless, bkt1, s1, p1, node_point) {
+			hash_for_each(ctx->nfa.head, bkt2, p2, node_point) {
+				hash_for_each_safe(p2->head_jump, bkt3, s2,
+						   j1, node_jump) {
+					if (str_equal(p1->name,
+						      j1->hpoint->name))
+						hash_del(&j1->node_jump);
+				}
 			}
 		}
-
-		if (point_exists)
-			continue;
-
-		pn = point_alloc(p1->name);
-
-		hash_add(useless, &pn->node_point, pn->key);
-		hash_del(&p1->node_point);
-
-		printf("[INFO]: Point '%s' is useless\n",
-		       p1->name);
 	}
 
-	hash_for_each_safe(useless, bkt1, s1, p1, node_point) {
-		hash_for_each(ctx->nfa.head, bkt2, p2, node_point) {
-			hash_for_each_safe(p2->head_jump, bkt3, s2,
-					   j1, node_jump) {
-				if (str_equal(p1->name, j1->hpoint->name))
-					hash_del(&j1->node_jump);
-			}
-		}
-	}
+	printf("[INFO]: Deleting useless done\n");
 }
 
 static void delete_usless(struct ctx *ctx)
