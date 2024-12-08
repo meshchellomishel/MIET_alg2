@@ -1,0 +1,19 @@
+q0
+a + * ( )
+S a + * ( ) E T F
+q0
+S
+q0
+q0 e S q0 E
+q0 e E q0 E+T
+q0 e E q0 T
+q0 e T q0 T*F
+q0 e T q0 F
+q0 e F q0 (E)
+q0 e F q0 a
+
+q0 a a q0 e
+q0 * * q0 e
+q0 + + q0 e
+q0 ( ( q0 e
+q0 ) ) q0 e
